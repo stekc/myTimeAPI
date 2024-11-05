@@ -1,3 +1,4 @@
+from cache import Cache
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from starlette.status import HTTP_403_FORBIDDEN
@@ -13,6 +14,7 @@ import config_file
 from datetime import datetime as dt
 
 app = FastAPI()
+schedule_cache = Cache(ttl_seconds=300)
 
 # Add CORS middleware
 app.add_middleware(
@@ -79,10 +81,23 @@ def calculate_shift_hours(start_datetime: dt, end_datetime: dt) -> float:
 
 async def get_schedule_data(headers: dict, start_date: dt, end_date: dt) -> dict:
     """Fetches and validates schedule data from the API."""
+    cache_key = f"schedule_{start_date.date()}_{end_date.date()}"
+    
+    # Try to get from cache first
+    cached_data = schedule_cache.get(cache_key)
+    if cached_data is not None:
+        logger.info(f"Cache hit for {cache_key}")
+        return cached_data
+        
+    # If not in cache, fetch from API
+    logger.info(f"Cache miss for {cache_key}, fetching from API")
     call = functions.call_wfm(headers, start_date.date(), end_date.date())
     if call.status_code != 200:
         raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")
-    return call.json()
+    
+    data = call.json()
+    schedule_cache.set(cache_key, data)
+    return data
 
 async def get_initial_headers() -> dict:
     """Gets initial headers with authorization token."""
@@ -414,6 +429,17 @@ async def get_next_day_off(auth_key: str = Depends(get_auth_key)):
         logger.error(f"Error occurred while finding next day off: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/clear_cache")
+async def clear_cache(auth_key: str = Depends(get_auth_key)):
+    """Clear the schedule cache"""
+    try:
+        logger.info("Clearing schedule cache")
+        schedule_cache.clear()
+        return {"message": "Cache cleared successfully"}
+    except Exception as e:
+        logger.error(f"Error clearing cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
