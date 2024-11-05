@@ -38,60 +38,79 @@ async def get_auth_key(auth_key_header: str = Security(auth_key_header)):
         )
     return auth_key_header
 
-class Schedule(BaseModel):
-    date: str
-    shifts: list
-    store_info: Optional[dict] = None
+async def validate_and_refresh_token(headers: dict) -> dict:
+    """Validates the current token and refreshes if needed."""
+    if functions.test_token(headers).status_code == 401:
+        logger.warning("Token invalid. Generating new token...")
+        new_token = get_bearer.get_token()
+        headers = {"Authorization": new_token}
+        
+        if functions.test_token(headers).status_code == 400:
+            config = configparser.ConfigParser()
+            config.read("config.cfg")
+            config["DEFAULT"]["Bearer"] = new_token
+            with open("config.cfg", "w") as configfile:
+                config.write(configfile)
+        else:
+            raise HTTPException(status_code=401, detail="Authentication failed")
+    return headers
+
+def get_week_dates(offset_weeks: int = 0) -> tuple[dt, dt]:
+    """Returns start (Sunday) and end (Saturday) dates for a given week offset."""
+    start_date = dt.now()
+    start_date -= datetime.timedelta(start_date.weekday() + 1)
+    start_date += datetime.timedelta(weeks=offset_weeks)
+    end_date = start_date + datetime.timedelta(6)
+    return start_date, end_date
+
+def format_shift_time(shift_date: dt, start_datetime: dt) -> str:
+    """Returns human-readable day text (Today/Tomorrow/Day of week)."""
+    if shift_date.date() == dt.now().date():
+        return "Today"
+    elif shift_date.date() == (dt.now() + datetime.timedelta(1)).date():
+        return "Tomorrow"
+    return shift_date.strftime("%A")
+
+def calculate_shift_hours(start_datetime: dt, end_datetime: dt) -> float:
+    """Calculates shift duration accounting for lunch breaks."""
+    duration = end_datetime - start_datetime
+    hours = duration.total_seconds() / 3600
+    return hours - 0.5 if hours >= 5 else hours
+
+async def get_schedule_data(headers: dict, start_date: dt, end_date: dt) -> dict:
+    """Fetches and validates schedule data from the API."""
+    call = functions.call_wfm(headers, start_date.date(), end_date.date())
+    if call.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")
+    return call.json()
+
+async def get_initial_headers() -> dict:
+    """Gets initial headers with authorization token."""
+    config = configparser.ConfigParser()
+    config.read("config.cfg")
+    return {"Authorization": config["DEFAULT"]["Bearer"]}
 
 @app.get("/schedule")
 async def get_schedule(auth_key: str = Depends(get_auth_key)):
     try:
         logger.info("Starting schedule fetch")
-        config = configparser.ConfigParser()
         store_info = functions.Store()
-        config.read("config.cfg")
-        headers = {"Authorization": config["DEFAULT"]["Bearer"]}
-
-        # Test token and get new one if needed
-        if functions.test_token(headers).status_code == 401:
-            logger.warning("Token invalid. Generating new token...")
-            new_token = get_bearer.get_token()
-            headers = {"Authorization": new_token}
-            
-            if functions.test_token(headers).status_code == 400:
-                config["DEFAULT"]["Bearer"] = new_token
-                with open("config.cfg", "w") as configfile:
-                    config.write(configfile)
-            else:
-                raise HTTPException(status_code=401, detail="Authentication failed")
-
-        # Set up date range
-        start_week_obj = datetime.datetime.now()
-        start_week_obj -= datetime.timedelta(start_week_obj.weekday() + 1)
-        end_week_obj = start_week_obj + datetime.timedelta(6)
-
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
         schedule_data = []
 
         # Get 4 weeks of schedules
         for i in range(4):
-            if i > 0:
-                start_week_obj += datetime.timedelta(7)
-                end_week_obj += datetime.timedelta(7)
-
-            call = functions.call_wfm(headers, start_week_obj.date(), end_week_obj.date())
-            
-            if call.status_code != 200:
-                raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")
-
-            call_json = call.json()
+            start_week_obj, end_week_obj = get_week_dates(i)
+            call_json = await get_schedule_data(headers, start_week_obj, end_week_obj)
             
             # Process each day's schedule
             for day in call_json["schedules"]:
-                schedule_entry = Schedule(
-                    date=day["schedule_date"],
-                    shifts=[],
-                    store_info=None
-                )
+                schedule_entry = {
+                    "date": day["schedule_date"],
+                    "shifts": [],
+                    "store_info": None
+                }
 
                 if day["total_display_segments"] > 0:
                     for segment in day["display_segments"]:
@@ -100,22 +119,20 @@ async def get_schedule(auth_key: str = Depends(get_auth_key)):
                         if store_info.store_id != shift_location:
                             store_info = functions.get_store_info(shift_location)
                             
-                        shift = {
+                        schedule_entry["shifts"].append({
                             "start_time": segment["segment_start"],
                             "end_time": segment["segment_end"],
                             "job_name": segment["job_name"],
                             "total_jobs": segment["total_jobs"],
                             "location": shift_location
-                        }
-                        
-                        schedule_entry.shifts.append(shift)
-                        schedule_entry.store_info = {
+                        })
+                        schedule_entry["store_info"] = {
                             "address": store_info.address,
                             "timezone_offset": store_info.timezone_offset,
                             "store_id": store_info.store_id
                         }
 
-                schedule_data.append(schedule_entry.dict())
+                schedule_data.append(schedule_entry)
 
         return {"schedule": schedule_data}
 
@@ -127,23 +144,9 @@ async def get_schedule(auth_key: str = Depends(get_auth_key)):
 async def get_next_shift(auth_key: str = Depends(get_auth_key)):
     try:
         logger.info("Starting next shift fetch")
-        config = configparser.ConfigParser()
         store_info = functions.Store()
-        config.read("config.cfg")
-        headers = {"Authorization": config["DEFAULT"]["Bearer"]}
-
-        # Test token and get new one if needed
-        if functions.test_token(headers).status_code == 401:
-            logger.warning("Token invalid. Generating new token...")
-            new_token = get_bearer.get_token()
-            headers = {"Authorization": new_token}
-            
-            if functions.test_token(headers).status_code == 400:
-                config["DEFAULT"]["Bearer"] = new_token
-                with open("config.cfg", "w") as configfile:
-                    config.write(configfile)
-            else:
-                raise HTTPException(status_code=401, detail="Authentication failed")
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
 
         # Get current Sunday and next Saturday
         start_date = dt.now()
@@ -212,23 +215,9 @@ async def get_next_shift(auth_key: str = Depends(get_auth_key)):
 async def get_schedule_summary(auth_key: str = Depends(get_auth_key)):
     try:
         logger.info("Starting schedule summary fetch")
-        config = configparser.ConfigParser()
         store_info = functions.Store()
-        config.read("config.cfg")
-        headers = {"Authorization": config["DEFAULT"]["Bearer"]}
-
-        # Test token and get new one if needed
-        if functions.test_token(headers).status_code == 401:
-            logger.warning("Token invalid. Generating new token...")
-            new_token = get_bearer.get_token()
-            headers = {"Authorization": new_token}
-            
-            if functions.test_token(headers).status_code == 400:
-                config["DEFAULT"]["Bearer"] = new_token
-                with open("config.cfg", "w") as configfile:
-                    config.write(configfile)
-            else:
-                raise HTTPException(status_code=401, detail="Authentication failed")
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
 
         # Get current Sunday and next Saturday
         start_date = dt.now()
@@ -306,6 +295,123 @@ async def get_schedule_summary(auth_key: str = Depends(get_auth_key)):
 
     except Exception as e:
         logger.error(f"Error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/working_today")
+async def working_today(auth_key: str = Depends(get_auth_key)):
+    try:
+        logger.info("Checking if working today")
+        store_info = functions.Store()
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
+
+        # Get current Sunday and next Saturday
+        start_date = dt.now()
+        start_date -= datetime.timedelta(start_date.weekday() + 1)  # Adjust to previous Sunday
+        end_date = start_date + datetime.timedelta(6)  # Get to Saturday
+
+        call = functions.call_wfm(headers, start_date.date(), end_date.date())
+        
+        if call.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")
+
+        call_json = call.json()
+        today = dt.now().date()
+        
+        # Find today's schedule
+        for day in call_json["schedules"]:
+            if day["schedule_date"] == today.strftime("%Y-%m-%d"):
+                return {"working": day["total_display_segments"] > 0}
+        
+        return {"working": False}
+
+    except Exception as e:
+        logger.error(f"Error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/working_tomorrow")
+async def working_tomorrow(auth_key: str = Depends(get_auth_key)):
+    try:
+        logger.info("Checking if working tomorrow")
+        store_info = functions.Store()
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
+
+        # Get current Sunday and next Saturday
+        start_date = dt.now()
+        start_date -= datetime.timedelta(start_date.weekday() + 1)  # Adjust to previous Sunday
+        end_date = start_date + datetime.timedelta(6)  # Get to Saturday
+
+        call = functions.call_wfm(headers, start_date.date(), end_date.date())
+        
+        if call.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")
+
+        call_json = call.json()
+        tomorrow = (dt.now() + datetime.timedelta(days=1)).date()
+        
+        # Find tomorrow's schedule
+        for day in call_json["schedules"]:
+            if day["schedule_date"] == tomorrow.strftime("%Y-%m-%d"):
+                return {"working": day["total_display_segments"] > 0}
+        
+        return {"working": False}
+
+    except Exception as e:
+        logger.error(f"Error occurred: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/next_day_off")
+async def get_next_day_off(auth_key: str = Depends(get_auth_key)):
+    """Find the next day you're not scheduled to work"""
+    try:
+        logger.info("Finding next day off")
+        headers = await get_initial_headers()
+        headers = await validate_and_refresh_token(headers)
+        
+        # Get schedules for the next 4 weeks to ensure we find a day off
+        working_days = set()
+        today = dt.now().date()
+        
+        # Collect all working days
+        for i in range(4):
+            start_week_obj, end_week_obj = get_week_dates(i)
+            call_json = await get_schedule_data(headers, start_week_obj, end_week_obj)
+            
+            for day in call_json["schedules"]:
+                if day["total_display_segments"] > 0:
+                    working_days.add(dt.strptime(day["schedule_date"], "%Y-%m-%d").date())
+        
+        # Find the next day off
+        current_date = today
+        while current_date in working_days:
+            current_date += datetime.timedelta(days=1)
+            
+        # Format the response
+        days_until = (current_date - today).days
+        
+        if days_until == 0:
+            message = "You are off today!"
+        elif days_until == 1:
+            message = "Your next day off is tomorrow"
+        else:
+            day_name = current_date.strftime("%A")
+            message = f"Your next day off is {day_name}"
+            
+            if days_until >= 7:
+                message += f" ({days_until} days from now)"
+        
+        return {
+            "next_day_off": {
+                "date": current_date.strftime("%Y-%m-%d"),
+                "days_until": days_until,
+                "message": message,
+                "is_today": days_until == 0
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error occurred while finding next day off: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

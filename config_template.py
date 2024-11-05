@@ -13,7 +13,7 @@ AUTH_KEY = "password"
 # This is the key that will be used to authenticate the API requests
 
 # If you don't want this script to scan for posted shifts
-run_posted_shifts = True
+run_posted_shifts = False
 # When obtaining the token, headless means it will run in the background, otherwise it'll be visible to the user
 headless = True
 totp = pyotp.TOTP("")

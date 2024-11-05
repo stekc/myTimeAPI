@@ -150,3 +150,4 @@ cython_debug/
 config.cfg
 config_file.py
 shift_database.sqlite3
+docker-compose.yml
