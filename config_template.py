@@ -9,6 +9,8 @@ API_KEY = "eb2551e4accc14f38cc42d32fbc2b2ea"
 # you can change this but the default one should work
 PUSHOVER_APP_API_KEY = ""
 PUSHOVER_USER_API_KEY = ""
+AUTH_KEY = "password"
+# This is the key that will be used to authenticate the API requests
 
 # If you don't want this script to scan for posted shifts
 run_posted_shifts = True

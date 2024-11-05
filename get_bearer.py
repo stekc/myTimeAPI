@@ -69,27 +69,53 @@ def get_token():
     login_button = browser.find_element(By.ID, "submit-button")
     login_button.submit()
     time.sleep(2)
-    mfa_button = browser.find_element(
-        By.XPATH, '//*[contains(text(), "Authenticator")]'
-    )
-    mfa_button.click()
 
     try:
+        mfa_button = browser.find_element(
+            By.XPATH, '//*[contains(text(), "Authenticator")]'
+        )
+        mfa_button.click()
+
         element_present = ec.presence_of_element_located((By.ID, "totp-code"))
         WebDriverWait(browser, 10).until(element_present)
         time.sleep(1)
-    except TimeoutException:
-        logger.error("Timed out OTP button to load")
-        browser.close()
 
-    logger.success("Account Valid! Logging into 2FA")
-    otp = browser.find_element(By.ID, "totp-code")
-    otp.click()
-    otp.send_keys(config_file.get_mfa_code())
+        logger.success("Account Valid! Logging into 2FA")
+        otp = browser.find_element(By.ID, "totp-code")
+        otp.click()
+        otp.send_keys(config_file.get_mfa_code())
 
-    browser.find_element(By.ID, "submit-button").click()
-    logger.info("Clicking submit...")
-    time.sleep(10)
+        browser.find_element(By.ID, "submit-button").click()
+        logger.info("Clicking submit...")
+        time.sleep(10)
+    except Exception as e:
+        if config_file.headless:
+            logger.error(f"Auto-login failed in headless mode: {str(e)}")
+            browser.quit()
+            return None
+        else:
+            logger.warning(f"Auto-login failed: {str(e)}")
+            logger.info("Continuing with manual intervention - please log in manually")
+            # Wait for successful login by checking for network activity
+            while True:
+                time.sleep(2)
+                logs = browser.get_log("performance")
+                for entry in logs:
+                    try:
+                        message = json.loads(entry["message"])
+                        if "message" in message and "params" in message["message"]:
+                            params = message["message"]["params"]
+                            if "request" in params and "headers" in params["request"]:
+                                headers = params["request"]["headers"]
+                                if "authorization" in headers.keys() or "Authorization" in headers.keys():
+                                    auth_header = headers.get("authorization", headers.get("Authorization", ""))
+                                    if "Bearer " in auth_header:
+                                        browser.quit()
+                                        return auth_header
+                    except json.JSONDecodeError:
+                        continue
+                    except KeyError:
+                        continue
 
     logger.success("Logged in successfully! Grabbing Bearer token")
     logs = browser.get_log("performance")
