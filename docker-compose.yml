@@ -1,0 +1,22 @@
+services:
+  mytime:
+    container_name: mytime
+    image: python:3.11-slim
+    working_dir: /opt/mytime
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./:/opt/mytime
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "apt-get update && 
+      apt-get install -y wget chromium gnupg git build-essential python3-dev libglib2.0-0 libnss3 libgconf-2-4 libxi6 libxcursor1 &&
+      pip install --no-cache-dir -r requirements.txt && python server.py"
+    restart: unless-stopped
+    shm_size: '1gb'
+    networks:
+      - my_network
+networks:
+  my_network:
+    external: true
