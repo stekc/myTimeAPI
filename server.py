@@ -86,11 +86,11 @@ async def get_schedule_data(headers: dict, start_date: dt, end_date: dt) -> dict
     # Try to get from cache first
     cached_data = schedule_cache.get(cache_key)
     if cached_data is not None:
-        logger.info(f"Cache hit for {cache_key}")
+        logger.success(f"Cache hit for schedule {cache_key}")
         return cached_data
         
     # If not in cache, fetch from API
-    logger.info(f"Cache miss for {cache_key}, fetching from API")
+    logger.warning(f"Cache miss for schedule {cache_key}, fetching from API")
     call = functions.call_wfm(headers, start_date.date(), end_date.date())
     if call.status_code != 200:
         raise HTTPException(status_code=500, detail="Failed to fetch schedule from API")

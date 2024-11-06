@@ -9,12 +9,19 @@ from db import engine, SeenShift
 from loguru import logger
 
 import config_file
+from cache import Cache
 
 logger.info("Changing cwd to file path")
 os.chdir(os.path.dirname(__file__))
 
 creds = None
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+# Add store cache
+_store_cache = {}
+# Add API response caches with 5 minute TTL
+_wfm_cache = Cache(ttl_seconds=300)
+_available_shifts_cache = Cache(ttl_seconds=300)
 
 
 class Store:
@@ -88,6 +95,12 @@ def get_current_timezone_offset():
 
 
 def get_store_info(store_id):
+    # Check cache first
+    if store_id in _store_cache:
+        logger.success(f"Cache hit for store info {store_id}")
+        return _store_cache[store_id]
+        
+    logger.warning(f"Cache miss for store info {store_id}, fetching from API")
     # Get store address and TimeZone offset
     r = requests.get(
         "https://redsky.target.com/redsky_aggregations/v1/web/store_location_v1"
@@ -106,6 +119,9 @@ def get_store_info(store_id):
     )
     s.timezone_offset = get_current_timezone_offset()
     s.store_id = store_id
+    
+    # Cache the store info
+    _store_cache[store_id] = s
     return s
 
 
@@ -116,6 +132,15 @@ def call_wfm(
 ):
     # Function to call and retrieve schedule.
     # Start Date and end date format should be YYYY-MM-DD
+    cache_key = f"wfm_{start_date}_{end_date}"
+    
+    # Check cache first
+    cached_response = _wfm_cache.get(cache_key)
+    if cached_response is not None:
+        logger.success(f"Cache hit for WFM data {cache_key}")
+        return cached_response
+
+    logger.warning(f"Cache miss for WFM data {cache_key}, fetching from API")
     r = requests.get(
         f"https://api.target.com/wfm_schedules/v1/weekly_schedules?"
         f"team_member_number=00{config_file.EMPLOYEE_ID}"
@@ -125,6 +150,11 @@ def call_wfm(
         f"&key={config_file.API_KEY}",
         headers=hdr,
     )
+    
+    # Cache the response if successful
+    if r.status_code == 200:
+        _wfm_cache.set(cache_key, r)
+        
     return r
 
 
@@ -133,6 +163,15 @@ def call_available_shifts(
     start_date,
     end_date,
 ):
+    cache_key = f"available_shifts_{start_date}_{end_date}"
+    
+    # Check cache first
+    cached_response = _available_shifts_cache.get(cache_key)
+    if cached_response is not None:
+        logger.success(f"Cache hit for available shifts {cache_key}")
+        return cached_response
+
+    logger.warning(f"Cache miss for available shifts {cache_key}, fetching from API")
     r = requests.get(
         f"https://api.target.com/wfm_available_shifts/v1/available_shifts?"
         f"worker_id={config_file.EMPLOYEE_ID}"
@@ -142,6 +181,10 @@ def call_available_shifts(
         f"&key={config_file.API_KEY}",
         headers=hdr,
     )
+
+    # Cache the response if successful
+    if r.status_code == 200:
+        _available_shifts_cache.set(cache_key, r)
 
     return r
 

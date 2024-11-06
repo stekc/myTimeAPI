@@ -63,10 +63,10 @@ def start_get_schedule():
         cached_data = schedule_cache.get(cache_key)
         
         if cached_data is not None:
-            logger.info(f"Cache hit for {cache_key}")
+            logger.success(f"Cache hit for {cache_key}")
             call_json = cached_data
         else:
-            logger.info(f"Cache miss for {cache_key}, fetching from API")
+            logger.warning(f"Cache miss for {cache_key}, fetching from API")
             call = functions.call_wfm(headers, start_week_obj.date(), end_week_obj.date())
             if call.status_code != 200:
                 logger.error("Crap. API returned error exiting safely")
