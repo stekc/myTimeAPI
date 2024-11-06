@@ -248,7 +248,10 @@ async def get_schedule_summary(auth_key: str = Depends(get_auth_key)):
         
         upcoming_shifts = 0
         next_shift = None
+        next_shift_hours = 0
         total_hours = 0
+        today_hours = 0
+        today = dt.now().date()
         
         # Process all shifts
         for day in call_json["schedules"]:
@@ -266,12 +269,17 @@ async def get_schedule_summary(auth_key: str = Depends(get_auth_key)):
                     if shift_hours >= 5:
                         shift_hours -= 0.5
                     
+                    # Track today's hours separately
+                    if shift_date.date() == today:
+                        today_hours += shift_hours
+                    
                     total_hours += shift_hours
                     
                     if start_datetime > dt.now():
                         upcoming_shifts += 1
                         
                         if next_shift is None:
+                            next_shift_hours = shift_hours
                             # Get store info if needed
                             if store_info.store_id != segment["location"]:
                                 store_info = functions.get_store_info(segment["location"])
@@ -287,7 +295,8 @@ async def get_schedule_summary(auth_key: str = Depends(get_auth_key)):
                             start_time = start_datetime.strftime("%I:%M%p").lower().lstrip('0')
                             end_time = end_datetime.strftime("%I:%M%p").lower().lstrip('0')
                             
-                            next_shift = f"{day_text} from {start_time} to {end_time}"
+                            hours_display = int(next_shift_hours) if next_shift_hours.is_integer() else round(next_shift_hours, 1)
+                            next_shift = f"{day_text} from {start_time} to {end_time}, totaling {hours_display} hours"
 
         # Create the summary message
         if upcoming_shifts == 0:
